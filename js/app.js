@@ -82,74 +82,75 @@ function profileChip() {
 }
 const screen = (...kids) => h("div", { class: "app" }, ...kids);
 
-// ---- HOME ------------------------------------------------------------------
+// ---- HOME (= DAY hub) ------------------------------------------------------
+const pickTodayDay = () => ((new Date().getDate() - 1) % store.DAYS.length) + 1;
+
 SCREENS.home = () => {
   const st = store.streak();
   const stats = store.overallStats();
   const due = store.dueCount();
-  const pct = Math.round((stats.mastered / stats.total) * 100);
+
+  // quick actions: review / starred / random — kept small above the DAY grid
+  const quick = h("div", { class: "quickbar" },
+    h("button", { class: "qbtn accent", onclick: () => (due ? startReview() : toast("복습할 단어가 아직 없어요")) },
+      "🎯 오답·복습", due ? h("span", { class: "pill" }, due) : null),
+    h("button", { class: "qbtn", onclick: () => (store.starredWords().length ? startStudy(store.starredWords(), "⭐ 별표 단어") : toast("별표한 단어가 없어요")) }, "⭐ 별표"),
+    h("button", { class: "qbtn", onclick: () => startStudy(store.wordsForDay(pickTodayDay()), `DAY ${pickTodayDay()} 랜덤`) }, "🎲 랜덤")
+  );
+
+  const grid = h("div", { class: "day-grid" });
+  for (const day of store.DAYS) {
+    const pct = Math.round(store.dayMastery(day).ratio * 100);
+    grid.append(
+      h("button", { class: "day-cell" + (pct === 100 ? " done" : ""), onclick: () => go("dayHub", { day }) },
+        h("span", { class: "ring", style: { "--p": pct } }),
+        h("span", { class: "lbl" }, "DAY"),
+        h("span", { class: "num" }, day))
+    );
+  }
 
   return screen(
     topbar(store.META.title, {
       actions: [h("button", { class: "iconbtn", onclick: () => go("settings"), "aria-label": "설정" }, "⚙️")],
     }),
-    h(
-      "main",
-      { class: "screen stack" },
-      h(
-        "div",
-        { class: "hero" },
-        h("div", { class: "row", style: { justifyContent: "space-between", alignItems: "flex-start" } },
-          h("div", {},
-            h("div", { class: "big" }, st.count > 0 ? `🔥 ${st.count}일 연속` : "오늘도 화이팅!"),
-            h("div", { class: "sub" }, `외운 단어 ${stats.mastered} / ${stats.total} · ${pct}%`)
-          )
-        )
-      ),
-      h("div", { class: "stat-row" },
-        h("div", { class: "stat" }, h("b", {}, stats.seen), h("span", {}, "학습한 단어")),
-        h("div", { class: "stat" }, h("b", {}, stats.mastered), h("span", {}, "마스터")),
-        h("div", { class: "stat" }, h("b", {}, store.starredWords().length), h("span", {}, "⭐ 별표"))
-      ),
-      h("div", { class: "section-title" }, "오늘 할 일"),
-      h("div", { class: "tiles" },
-        h("button", { class: "tile wide", onclick: () => (due ? startReview() : toast("복습할 단어가 아직 없어요")) },
-          h("div", {}, h("b", {}, "🎯 오답 · 복습"), h("br"), h("small", {}, "틀린 단어 위주로 다시")),
-          due ? h("span", { class: "pill" }, `${due}개`) : h("small", { class: "muted" }, "0개")
-        ),
-        h("button", { class: "tile", onclick: () => go("days", { mode: "study" }) },
-          h("span", { class: "emoji" }, "📖"), h("b", {}, "단어 학습"), h("small", {}, "플래시카드")),
-        h("button", { class: "tile", onclick: () => go("days", { mode: "quiz" }) },
-          h("span", { class: "emoji" }, "✏️"), h("b", {}, "시험 풀기"), h("small", {}, "DAY별 퀴즈")),
-        h("button", { class: "tile", onclick: () => (store.starredWords().length ? startStudy(store.starredWords(), "⭐ 별표 단어") : toast("별표한 단어가 없어요")) },
-          h("span", { class: "emoji" }, "⭐"), h("b", {}, "별표 복습"), h("small", {}, "어려운 단어만")),
-        h("button", { class: "tile", onclick: () => startStudy(store.wordsForDay(pickTodayDay()), `DAY ${pickTodayDay()} 랜덤`) },
-          h("span", { class: "emoji" }, "🎲"), h("b", {}, "랜덤 학습"), h("small", {}, "가볍게 한 판"))
-      )
-    )
+    h("main", { class: "screen" },
+      h("div", { class: "hero compact" },
+        h("div", { class: "big" }, st.count > 0 ? `🔥 ${st.count}일 연속` : "오늘도 화이팅!"),
+        h("div", { class: "sub" }, `마스터 ${stats.mastered} / ${stats.total} · 학습 ${stats.seen}단어`)),
+      quick,
+      h("div", { class: "section-title" }, "DAY 선택 — 눌러서 학습/시험"),
+      grid)
   );
 };
-const pickTodayDay = () => ((new Date().getDate() - 1) % store.DAYS.length) + 1;
 
-// ---- DAY GRID --------------------------------------------------------------
-SCREENS.days = ({ mode }) => {
-  const grid = h("div", { class: "day-grid" });
-  for (const day of store.DAYS) {
-    const m = store.dayMastery(day);
-    const pct = Math.round(m.ratio * 100);
-    grid.append(
-      h("button", { class: "day-cell" + (pct === 100 ? " done" : ""), onclick: () => (mode === "study" ? startStudy(store.wordsForDay(day), `DAY ${day}`) : go("quizSetup", { day })) },
-        h("span", { class: "ring", style: { "--p": pct } }),
-        h("span", { class: "lbl" }, "DAY"),
-        h("span", { class: "num" }, day)
-      )
-    );
-  }
+// ---- DAY HUB (pick study or quiz for one day) ------------------------------
+function wordListPreview(words) {
+  const wrap = h("div", { class: "word-preview" });
+  words.forEach((w) =>
+    wrap.append(
+      h("button", { class: "wp-item", onclick: () => speak(w.en, store.settings().ttsRate) },
+        h("span", { class: "en" }, w.en), h("span", { class: "ko" }, shortKo(w.ko)))
+    )
+  );
+  return wrap;
+}
+SCREENS.dayHub = ({ day }) => {
+  const m = store.dayMastery(day);
+  const pct = Math.round(m.ratio * 100);
+  const words = store.wordsForDay(day);
   return screen(
-    topbar(mode === "study" ? "단어 학습" : "시험 풀기", { back: () => go("home") }),
-    h("main", { class: "screen" },
-      h("p", { class: "muted", style: { margin: "0 2px 12px" } }, mode === "study" ? "DAY를 골라 플래시카드로 외워요." : "DAY를 골라 시험 유형을 정해요."),
-      grid)
+    topbar(`DAY ${day}`, { back: () => go("home") }),
+    h("main", { class: "screen stack" },
+      h("div", { class: "card center stack" },
+        h("div", { class: "day-hub-num" }, `DAY ${day}`),
+        h("div", { class: "muted" }, `20단어 · 마스터 ${m.learned}/${m.total}`),
+        h("div", { class: "progress-line" }, h("span", { style: { width: `${pct}%` } }))),
+      h("button", { class: "btn primary block", onclick: () => startStudy(words, `DAY ${day}`) }, "📖 단어 학습 (플래시카드)"),
+      h("button", { class: "btn block", onclick: () => go("quizSetup", { day }) }, "✏️ 시험 풀기 (퀴즈)"),
+      h("div", { class: "card" },
+        h("div", { class: "section-title", style: { margin: "0 0 8px" } }, "이 DAY 단어 (눌러서 발음)"),
+        wordListPreview(words))
+    )
   );
 };
 
@@ -216,7 +217,7 @@ SCREENS.quizSetup = ({ day }) => {
   for (const c of [10, 20]) countChips.append(h("button", { class: "chip" + (state.count === c ? " on" : ""), onclick: () => { state.count = c; go("quizSetup", { day }); } }, `${c}문제`));
 
   return screen(
-    topbar(`DAY ${day} 시험`, { back: () => go("days", { mode: "quiz" }) }),
+    topbar(`DAY ${day} 시험`, { back: () => go("dayHub", { day }) }),
     h("main", { class: "screen stack" },
       h("div", { class: "card stack" },
         h("div", { class: "section-title", style: { margin: "0 0 4px" } }, "시험 유형"),

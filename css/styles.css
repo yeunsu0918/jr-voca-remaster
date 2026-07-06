@@ -131,6 +131,32 @@ body {
 
 .section-title { font-weight: 800; margin: 22px 2px 10px; font-size: 1rem; }
 
+/* ---- compact hero + quick bar (DAY-first home) ---- */
+.hero.compact { padding: 14px 16px; margin-top: 2px; }
+.hero.compact .big { font-size: 1.4rem; font-weight: 800; }
+.hero.compact .sub { opacity: 0.92; font-size: 0.85rem; }
+.quickbar { display: flex; gap: 8px; margin-top: 12px; overflow-x: auto; padding-bottom: 2px; }
+.qbtn {
+  flex: 0 0 auto; border: none; cursor: pointer; min-height: 44px; padding: 0 14px;
+  border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: var(--shadow);
+  font-weight: 700; font-size: 0.9rem; display: inline-flex; align-items: center; gap: 6px;
+}
+.qbtn:active { transform: scale(0.97); }
+.qbtn.accent { background: var(--brand-soft); color: var(--brand); }
+.qbtn .pill { background: var(--rose); color: #fff; }
+
+/* ---- day hub ---- */
+.day-hub-num { font-size: 1.8rem; font-weight: 800; letter-spacing: -0.02em; }
+.word-preview { display: grid; gap: 6px; max-height: 320px; overflow-y: auto; }
+.wp-item {
+  display: flex; justify-content: space-between; gap: 10px; align-items: center;
+  border: none; cursor: pointer; text-align: left; width: 100%;
+  background: var(--surface-2); border-radius: 10px; padding: 9px 12px; color: var(--text);
+}
+.wp-item:active { transform: scale(0.99); }
+.wp-item .en { font-weight: 700; }
+.wp-item .ko { color: var(--text-soft); font-size: 0.9rem; text-align: right; }
+
 /* ---- home action tiles ---- */
 .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .tile {
