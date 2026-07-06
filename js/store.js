@@ -160,6 +160,19 @@ export function toggleStar(id) {
   return rec.star;
 }
 
+// Snapshot / restore a single word's progress — used to undo an accidental
+// flashcard grade when the user steps back to a previous card.
+export function snapshotWord(id) {
+  const rec = activeProgress().words[id];
+  return rec ? { ...rec } : null;
+}
+export function restoreWord(id, snap) {
+  const p = activeProgress();
+  if (snap === null) delete p.words[id];
+  else p.words[id] = { ...snap };
+  save();
+}
+
 // ---- queries used by screens ----------------------------------------------
 export const boxOf = (id) => (activeProgress().words[id]?.box ?? 1);
 export const isStarred = (id) => !!activeProgress().words[id]?.star;

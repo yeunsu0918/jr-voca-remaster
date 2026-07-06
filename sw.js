@@ -1,5 +1,5 @@
 // sw.js — offline cache. Cache-first for app shell so it works with no network.
-const CACHE = "jrvoca-v5";
+const CACHE = "jrvoca-v6";
 const ASSETS = [
   "./",
   "./index.html",

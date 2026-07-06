@@ -181,9 +181,18 @@ SCREENS.study = () => {
   );
 
   const advance = (knew) => {
+    // remember this card's state so an accidental grade can be undone
+    (s.history ||= []).push({ i: s.i, id: w.id, snap: store.snapshotWord(w.id) });
     store.markSeen(w.id, knew);
     if (s.i + 1 >= s.words.length) return finishStudy(s);
     s.i += 1; s.flipped = false;
+    go("study");
+  };
+  const goPrev = () => {
+    if (!s.history || !s.history.length) return;
+    const last = s.history.pop();
+    store.restoreWord(last.id, last.snap); // undo the grade on the card we return to
+    s.i = last.i; s.flipped = false;
     go("study");
   };
 
@@ -205,7 +214,10 @@ SCREENS.study = () => {
       h("div", { class: "row", style: { marginTop: "18px" } },
         h("button", { class: "btn grow", onclick: () => advance(false) }, "✕ 헷갈려요"),
         h("button", { class: "btn primary grow", onclick: () => advance(true) }, "✓ 알아요")
-      )
+      ),
+      (s.history && s.history.length)
+        ? h("button", { class: "btn ghost block", style: { marginTop: "8px" }, onclick: goPrev }, "← 이전 카드 (잘못 눌렀을 때)")
+        : null
     )
   );
 };
