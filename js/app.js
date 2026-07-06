@@ -1,0 +1,420 @@
+// app.js — screen router and UI controller. Ties store + quiz + tts together.
+import * as store from "./store.js";
+import { speak, ttsSupported } from "./tts.js";
+import { MODES, buildQuiz, checkSpelling } from "./quiz.js";
+
+// ---- tiny DOM helper -------------------------------------------------------
+function h(tag, props = {}, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (k === "class") el.className = v;
+    else if (k === "html") el.innerHTML = v;
+    else if (k === "style" && typeof v === "object") Object.assign(el.style, v);
+    else if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined && v !== false) el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) {
+    if (kid === null || kid === undefined || kid === false) continue;
+    el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  }
+  return el;
+}
+const root = () => document.getElementById("app");
+const shortKo = (ko) => ko.split(/[;,]/)[0].trim();
+
+// ---- toast -----------------------------------------------------------------
+let toastTimer;
+function toast(msg) {
+  let t = document.querySelector(".toast");
+  if (!t) {
+    t = h("div", { class: "toast" });
+    document.body.append(t);
+  }
+  t.textContent = msg;
+  requestAnimationFrame(() => t.classList.add("show"));
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 1600);
+}
+
+// ---- theme + font ----------------------------------------------------------
+function applyChrome() {
+  const s = store.settings();
+  document.documentElement.dataset.theme = s.theme === "auto" ? "" : s.theme;
+  if (s.theme === "auto") document.documentElement.removeAttribute("data-theme");
+  document.documentElement.style.setProperty("--font-scale", s.fontScale);
+}
+
+// ---- router ----------------------------------------------------------------
+let route = { name: "home", params: {} };
+const session = {}; // transient quiz/study state
+function go(name, params = {}) {
+  route = { name, params };
+  render();
+  window.scrollTo(0, 0);
+}
+
+const SCREENS = {};
+function render() {
+  applyChrome();
+  const el = SCREENS[route.name] ? SCREENS[route.name](route.params) : SCREENS.home();
+  root().replaceChildren(el);
+}
+
+// ---- shared bits -----------------------------------------------------------
+function topbar(title, { back = null, actions = [] } = {}) {
+  return h(
+    "header",
+    { class: "topbar" },
+    back ? h("button", { class: "iconbtn back", onclick: back, "aria-label": "뒤로" }, "‹") : profileChip(),
+    h("h1", {}, title),
+    h("div", { class: "spacer" }),
+    ...actions
+  );
+}
+function profileChip() {
+  const p = store.activeProfile();
+  return h(
+    "button",
+    { class: "profile-chip", onclick: () => go("profiles") },
+    h("span", { class: "avatar", style: { background: p.color } }, p.name.slice(0, 1)),
+    p.name
+  );
+}
+const screen = (...kids) => h("div", { class: "app" }, ...kids);
+
+// ---- HOME ------------------------------------------------------------------
+SCREENS.home = () => {
+  const st = store.streak();
+  const stats = store.overallStats();
+  const due = store.dueCount();
+  const pct = Math.round((stats.mastered / stats.total) * 100);
+
+  return screen(
+    topbar(store.META.title, {
+      actions: [h("button", { class: "iconbtn", onclick: () => go("settings"), "aria-label": "설정" }, "⚙️")],
+    }),
+    h(
+      "main",
+      { class: "screen stack" },
+      h(
+        "div",
+        { class: "hero" },
+        h("div", { class: "row", style: { justifyContent: "space-between", alignItems: "flex-start" } },
+          h("div", {},
+            h("div", { class: "big" }, st.count > 0 ? `🔥 ${st.count}일 연속` : "오늘도 화이팅!"),
+            h("div", { class: "sub" }, `외운 단어 ${stats.mastered} / ${stats.total} · ${pct}%`)
+          )
+        )
+      ),
+      h("div", { class: "stat-row" },
+        h("div", { class: "stat" }, h("b", {}, stats.seen), h("span", {}, "학습한 단어")),
+        h("div", { class: "stat" }, h("b", {}, stats.mastered), h("span", {}, "마스터")),
+        h("div", { class: "stat" }, h("b", {}, store.starredWords().length), h("span", {}, "⭐ 별표"))
+      ),
+      h("div", { class: "section-title" }, "오늘 할 일"),
+      h("div", { class: "tiles" },
+        h("button", { class: "tile wide", onclick: () => (due ? startReview() : toast("복습할 단어가 아직 없어요")) },
+          h("div", {}, h("b", {}, "🎯 오답 · 복습"), h("br"), h("small", {}, "틀린 단어 위주로 다시")),
+          due ? h("span", { class: "pill" }, `${due}개`) : h("small", { class: "muted" }, "0개")
+        ),
+        h("button", { class: "tile", onclick: () => go("days", { mode: "study" }) },
+          h("span", { class: "emoji" }, "📖"), h("b", {}, "단어 학습"), h("small", {}, "플래시카드")),
+        h("button", { class: "tile", onclick: () => go("days", { mode: "quiz" }) },
+          h("span", { class: "emoji" }, "✏️"), h("b", {}, "시험 풀기"), h("small", {}, "DAY별 퀴즈")),
+        h("button", { class: "tile", onclick: () => (store.starredWords().length ? startStudy(store.starredWords(), "⭐ 별표 단어") : toast("별표한 단어가 없어요")) },
+          h("span", { class: "emoji" }, "⭐"), h("b", {}, "별표 복습"), h("small", {}, "어려운 단어만")),
+        h("button", { class: "tile", onclick: () => startStudy(store.wordsForDay(pickTodayDay()), `DAY ${pickTodayDay()} 랜덤`) },
+          h("span", { class: "emoji" }, "🎲"), h("b", {}, "랜덤 학습"), h("small", {}, "가볍게 한 판"))
+      )
+    )
+  );
+};
+const pickTodayDay = () => ((new Date().getDate() - 1) % store.DAYS.length) + 1;
+
+// ---- DAY GRID --------------------------------------------------------------
+SCREENS.days = ({ mode }) => {
+  const grid = h("div", { class: "day-grid" });
+  for (const day of store.DAYS) {
+    const m = store.dayMastery(day);
+    const pct = Math.round(m.ratio * 100);
+    grid.append(
+      h("button", { class: "day-cell" + (pct === 100 ? " done" : ""), onclick: () => (mode === "study" ? startStudy(store.wordsForDay(day), `DAY ${day}`) : go("quizSetup", { day })) },
+        h("span", { class: "ring", style: { "--p": pct } }),
+        h("span", { class: "lbl" }, "DAY"),
+        h("span", { class: "num" }, day)
+      )
+    );
+  }
+  return screen(
+    topbar(mode === "study" ? "단어 학습" : "시험 풀기", { back: () => go("home") }),
+    h("main", { class: "screen" },
+      h("p", { class: "muted", style: { margin: "0 2px 12px" } }, mode === "study" ? "DAY를 골라 플래시카드로 외워요." : "DAY를 골라 시험 유형을 정해요."),
+      grid)
+  );
+};
+
+// ---- FLASHCARD STUDY -------------------------------------------------------
+function startStudy(words, title) {
+  session.study = { words: words.slice(), i: 0, title, flipped: false };
+  go("study");
+}
+SCREENS.study = () => {
+  const s = session.study;
+  if (!s || !s.words.length) return SCREENS.home();
+  const w = s.words[s.i];
+  const box = store.boxOf(w.id);
+  const flash = h("div", { class: "flash" + (s.flipped ? " flipped" : "") });
+  const flip = () => { s.flipped = !s.flipped; flash.classList.toggle("flipped"); };
+
+  flash.append(
+    h("div", { class: "face front", onclick: flip },
+      h("button", { class: "box-tag" }, `단계 ${box}/5`),
+      h("button", { class: "star-btn" + (store.isStarred(w.id) ? " on" : ""), onclick: (e) => { e.stopPropagation(); const on = store.toggleStar(w.id); e.currentTarget.classList.toggle("on", on); } }, "★"),
+      h("div", { class: "en" }, w.en),
+      ttsSupported() && h("button", { class: "speak-btn", onclick: (e) => { e.stopPropagation(); speak(w.en, store.settings().ttsRate); } }, "🔊"),
+      h("div", { class: "hint" }, "카드를 눌러 뜻 보기")
+    ),
+    h("div", { class: "face back", onclick: flip },
+      h("div", { class: "en", style: { fontSize: "1.6rem" } }, w.en),
+      h("div", { class: "ko" }, w.ko),
+      h("div", { class: "hint" }, "알면 O, 헷갈리면 X")
+    )
+  );
+
+  const advance = (knew) => {
+    store.markSeen(w.id, knew);
+    if (s.i + 1 >= s.words.length) return finishStudy(s);
+    s.i += 1; s.flipped = false;
+    go("study");
+  };
+
+  return screen(
+    topbar(s.title, { back: () => go("home"), actions: [h("span", { class: "qcount" }, `${s.i + 1} / ${s.words.length}`)] }),
+    h("main", { class: "screen" },
+      h("div", { class: "progress-line", style: { marginBottom: "8px" } }, h("span", { style: { width: `${((s.i + 1) / s.words.length) * 100}%` } })),
+      h("div", { class: "flash-wrap" }, flash),
+      h("div", { class: "row", style: { marginTop: "18px" } },
+        h("button", { class: "btn grow", onclick: () => advance(false) }, "✕ 헷갈려요"),
+        h("button", { class: "btn primary grow", onclick: () => advance(true) }, "✓ 알아요")
+      )
+    )
+  );
+};
+function finishStudy(s) {
+  go("done", { title: "학습 끝!", msg: `${s.words.length}개 카드를 봤어요`, emoji: "🎉" });
+}
+
+// ---- QUIZ SETUP ------------------------------------------------------------
+SCREENS.quizSetup = ({ day }) => {
+  const state = (session.setup ||= { mode: "en2ko", count: 20 });
+  const modeChips = h("div", { class: "chips" });
+  for (const [key, m] of Object.entries(MODES)) {
+    if (m.audio && !ttsSupported()) continue;
+    modeChips.append(h("button", { class: "chip" + (state.mode === key ? " on" : ""), onclick: () => { state.mode = key; go("quizSetup", { day }); } }, m.label));
+  }
+  const countChips = h("div", { class: "chips" });
+  for (const c of [10, 20]) countChips.append(h("button", { class: "chip" + (state.count === c ? " on" : ""), onclick: () => { state.count = c; go("quizSetup", { day }); } }, `${c}문제`));
+
+  return screen(
+    topbar(`DAY ${day} 시험`, { back: () => go("days", { mode: "quiz" }) }),
+    h("main", { class: "screen stack" },
+      h("div", { class: "card stack" },
+        h("div", { class: "section-title", style: { margin: "0 0 4px" } }, "시험 유형"),
+        modeChips,
+        h("div", { class: "section-title", style: { margin: "8px 0 4px" } }, "문제 수"),
+        countChips),
+      h("button", { class: "btn primary block", onclick: () => startQuiz(store.wordsForDay(day), state.mode, state.count, `DAY ${day}`) }, "시작하기")
+    )
+  );
+};
+
+// ---- QUIZ PLAY -------------------------------------------------------------
+function startQuiz(pool, mode, count, title) {
+  const questions = buildQuiz(pool, mode, count);
+  session.quiz = { questions, i: 0, correct: 0, wrong: [], title, mode, answered: false };
+  go("quiz");
+}
+function startReview() {
+  const words = store.dueForReview(20);
+  if (!words.length) return toast("복습할 단어가 아직 없어요");
+  startQuiz(words, ttsSupported() ? "en2ko" : "en2ko", words.length, "🎯 오답 · 복습");
+}
+
+SCREENS.quiz = () => {
+  const q = session.quiz;
+  if (!q) return SCREENS.home();
+  const item = q.questions[q.i];
+  if (item.audio) setTimeout(() => speak(item.word.en, store.settings().ttsRate), 250);
+
+  const head = h("div", { class: "qhead" },
+    h("button", { class: "iconbtn back", onclick: () => go("home") }, "✕"),
+    h("div", { class: "progress-line grow" }, h("span", { style: { width: `${(q.i / q.questions.length) * 100}%` } })),
+    h("div", { class: "qcount" }, `${q.i + 1}/${q.questions.length}`)
+  );
+
+  const body = MODES[item.mode].kind === "input" ? spellBody(q, item) : choiceBody(q, item);
+  return screen(h("main", { class: "screen", style: { paddingTop: "8px" } }, head, body));
+};
+
+function nextQuestion(q) {
+  if (q.i + 1 >= q.questions.length) return finishQuiz(q);
+  q.i += 1; q.answered = false;
+  go("quiz");
+}
+
+function choiceBody(q, item) {
+  const wrap = h("div", { class: "stack" });
+  const promptCard = h("div", { class: "card prompt-card" },
+    item.audio
+      ? h("button", { class: "speak-btn", style: { width: "72px", height: "72px", fontSize: "1.8rem" }, onclick: () => speak(item.word.en, store.settings().ttsRate) }, "🔊")
+      : h("div", { class: "q" + (item.mode === "ko2en" ? " ko" : "") }, item.prompt)
+  );
+  const opts = h("div", { class: "options" });
+  const buttons = [];
+  item.options.forEach((o) => {
+    const b = h("button", { class: "option", onclick: () => choose(o, b) }, o.text);
+    buttons.push(b); opts.append(b);
+  });
+  const fb = h("div", { class: "feedback" });
+
+  function choose(o, clickedBtn) {
+    if (q.answered) return;
+    q.answered = true;
+    const correct = o.text === item.correctText;
+    store.recordAnswer(item.id, correct);
+    if (correct) q.correct += 1; else q.wrong.push(item.word);
+    buttons.forEach((b) => {
+      b.classList.add("dim");
+      if (b.textContent === item.correctText) b.classList.replace("dim", "correct");
+      if (b === clickedBtn && !correct) b.classList.replace("dim", "wrong");
+    });
+    fb.textContent = correct ? "정답! 👍" : `아쉬워요 · ${item.word.en} = ${shortKo(item.word.ko)}`;
+    fb.className = "feedback " + (correct ? "ok" : "no");
+    setTimeout(() => nextQuestion(q), correct ? 700 : 1500);
+  }
+  wrap.append(promptCard, opts, fb);
+  return wrap;
+}
+
+function spellBody(q, item) {
+  const wrap = h("div", { class: "stack" });
+  const input = h("input", { class: "spell-input", type: "text", autocomplete: "off", autocapitalize: "off", spellcheck: "false", placeholder: "영어로 입력", enterkeyhint: "done" });
+  const fb = h("div", { class: "feedback" });
+  const submit = h("button", { class: "btn primary block", onclick: check }, "확인");
+
+  function check() {
+    if (q.answered) return;
+    const correct = checkSpelling(input.value, item.answer);
+    if (!input.value.trim()) return;
+    q.answered = true;
+    store.recordAnswer(item.id, correct);
+    if (correct) q.correct += 1; else q.wrong.push(item.word);
+    input.disabled = true;
+    fb.textContent = correct ? "정답! 👍" : `정답: ${item.answer}`;
+    fb.className = "feedback " + (correct ? "ok" : "no");
+    setTimeout(() => nextQuestion(q), correct ? 700 : 1600);
+  }
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") check(); });
+  setTimeout(() => input.focus(), 60);
+  wrap.append(h("div", { class: "card prompt-card" }, h("div", { class: "q ko" }, item.prompt)), input, fb, submit);
+  return wrap;
+}
+
+function finishQuiz(q) {
+  const score = Math.round((q.correct / q.questions.length) * 100);
+  go("quizResult", { score });
+}
+SCREENS.quizResult = ({ score }) => {
+  const q = session.quiz;
+  const emoji = score === 100 ? "🏆" : score >= 80 ? "🎉" : score >= 60 ? "💪" : "📚";
+  const wrongList = h("div", { class: "wrong-list" });
+  q.wrong.forEach((w) =>
+    wrongList.append(
+      h("div", { class: "wrong-item", onclick: () => speak(w.en, store.settings().ttsRate) },
+        h("span", { class: "en" }, w.en), h("span", { class: "ko" }, shortKo(w.ko)))
+    )
+  );
+  return screen(
+    topbar("결과", { back: () => go("home") }),
+    h("main", { class: "screen stack" },
+      h("div", { class: "card center stack" },
+        h("div", { style: { fontSize: "3rem" } }, emoji),
+        h("div", { class: "result-score" }, `${score}점`),
+        h("div", { class: "muted" }, `${q.correct} / ${q.questions.length} 정답 · ${q.title}`)),
+      q.wrong.length
+        ? h("div", { class: "card" },
+            h("div", { class: "section-title", style: { margin: "0 0 8px" } }, `틀린 단어 ${q.wrong.length}개 (눌러서 발음)`),
+            wrongList,
+            h("button", { class: "btn primary block", style: { marginTop: "12px" }, onclick: () => startStudy(q.wrong.slice(), "오답 다시 외우기") }, "오답만 다시 외우기"))
+        : h("div", { class: "card center" }, h("b", {}, "완벽해요! 틀린 단어가 없어요 ✨")),
+      h("button", { class: "btn block", onclick: () => go("home") }, "홈으로")
+    )
+  );
+};
+
+// ---- generic DONE ----------------------------------------------------------
+SCREENS.done = ({ title, msg, emoji }) =>
+  screen(
+    topbar(title, { back: () => go("home") }),
+    h("main", { class: "screen" },
+      h("div", { class: "card center stack", style: { marginTop: "40px" } },
+        h("div", { style: { fontSize: "3.4rem" } }, emoji || "✅"),
+        h("h2", {}, title), h("p", { class: "muted" }, msg),
+        h("button", { class: "btn primary block", onclick: () => go("home") }, "홈으로"))
+    )
+  );
+
+// ---- PROFILES --------------------------------------------------------------
+SCREENS.profiles = () => {
+  const list = h("div", { class: "stack" });
+  store.profiles().forEach((p) => {
+    const active = p.id === store.activeProfile().id;
+    list.append(
+      h("div", { class: "field" },
+        h("button", { class: "row grow", style: { alignItems: "center", background: "none", border: "none", cursor: "pointer", color: "var(--text)" }, onclick: () => { store.switchProfile(p.id); toast(`${p.name}으로 전환`); go("home"); } },
+          h("span", { class: "avatar", style: { background: p.color } }, p.name.slice(0, 1)),
+          h("b", { style: { marginLeft: "10px" } }, p.name), active && h("span", { class: "muted", style: { marginLeft: "8px" } }, "· 사용 중")),
+        store.profiles().length > 1 && h("button", { class: "iconbtn", onclick: () => { if (confirm(`${p.name} 학습자를 삭제할까요?`)) { store.removeProfile(p.id); go("profiles"); } } }, "🗑")
+      )
+    );
+  });
+  return screen(
+    topbar("학습자", { back: () => go("home") }),
+    h("main", { class: "screen stack" },
+      h("div", { class: "card" }, list),
+      h("button", { class: "btn primary block", onclick: () => { const n = prompt("새 학습자 이름"); if (n) { store.addProfile(n); go("home"); } } }, "+ 학습자 추가"))
+  );
+};
+
+// ---- SETTINGS --------------------------------------------------------------
+SCREENS.settings = () => {
+  const s = store.settings();
+  const themeChips = h("div", { class: "chips" });
+  [["auto", "자동"], ["light", "밝게"], ["dark", "어둡게"]].forEach(([v, l]) =>
+    themeChips.append(h("button", { class: "chip" + (s.theme === v ? " on" : ""), onclick: () => { store.updateSettings({ theme: v }); go("settings"); } }, l)));
+
+  return screen(
+    topbar("설정", { back: () => go("home") }),
+    h("main", { class: "screen stack" },
+      h("div", { class: "card" },
+        h("div", { class: "field" }, h("label", {}, "테마"), themeChips),
+        h("div", { class: "field" }, h("label", {}, "글자 크기"),
+          h("input", { type: "range", min: "0.9", max: "1.3", step: "0.1", value: s.fontScale, oninput: (e) => { store.updateSettings({ fontScale: parseFloat(e.target.value) }); applyChrome(); } })),
+        ttsSupported() && h("div", { class: "field" }, h("label", {}, "발음 속도"),
+          h("input", { type: "range", min: "0.6", max: "1.1", step: "0.05", value: s.ttsRate, oninput: (e) => store.updateSettings({ ttsRate: parseFloat(e.target.value) }), onchange: () => speak("hello", store.settings().ttsRate) }))),
+      h("div", { class: "card" },
+        h("div", { class: "field" }, h("label", {}, "이 학습자 진도 초기화"),
+          h("button", { class: "btn", onclick: () => { if (confirm("현재 학습자의 모든 진도를 지울까요?")) { store.resetProgress(); toast("초기화했어요"); go("home"); } } }, "초기화"))),
+      h("p", { class: "muted center", style: { fontSize: "0.8rem" } }, `${store.META.total}단어 · 오프라인 지원 · v2`)
+    )
+  );
+};
+
+// ---- boot ------------------------------------------------------------------
+store.onChange(() => {}); // reserved for future live-refresh
+applyChrome();
+go("home");
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => {}));
+}
