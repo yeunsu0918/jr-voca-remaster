@@ -19,8 +19,19 @@ const shuffle = (arr) => {
   return a;
 };
 
-// The first Korean sense only, for compact multiple-choice options.
-const shortKo = (ko) => ko.split(/[;,]/)[0].trim();
+// The first Korean sense only, for compact display. Splits on a top-level
+// comma/semicolon — separators inside ( ) or [ ] are kept so entries like
+// "~을 입다[신다, 쓰다]" don't get chopped mid-bracket.
+export function shortKo(ko) {
+  let depth = 0;
+  for (let i = 0; i < ko.length; i++) {
+    const c = ko[i];
+    if (c === "(" || c === "[") depth++;
+    else if (c === ")" || c === "]") depth = Math.max(0, depth - 1);
+    else if ((c === "," || c === ";") && depth === 0) return ko.slice(0, i).trim();
+  }
+  return ko.trim();
+}
 
 // Pick 3 wrong options for a word, preferring same-day words so the
 // distractors feel plausible; fall back to the whole list if needed.
