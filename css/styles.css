@@ -74,7 +74,8 @@ body {
   font-size: 1.2rem; cursor: pointer; display: grid; place-items: center;
 }
 .iconbtn:active { transform: scale(0.94); }
-.back { background: none; box-shadow: none; }
+/* back button: keep the surface + shadow so it reads as a real, tappable button */
+.back { font-size: 1.5rem; font-weight: 700; }
 
 .profile-chip {
   display: flex; align-items: center; gap: 8px;
